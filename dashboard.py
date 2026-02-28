@@ -1,108 +1,78 @@
 import streamlit as st
-import requests
 import pandas as pd
-import time
+import sqlite3
 
-st.set_page_config(page_title="Crypto Analytics", layout="wide")
+# Page config
+st.set_page_config(page_title="Crypto Dashboard", layout="wide", page_icon="💰")
 
-# -------- AUTO REFRESH ----------
-st.experimental_set_query_params(refresh=str(time.time()))
-
-# -------- FETCH DATA ----------
-try:
-    coins_response = requests.get("http://127.0.0.1:8000/coins")
-    stats_response = requests.get("http://127.0.0.1:8000/stats")
-
-    coins_data = coins_response.json()
-    stats_data = stats_response.json()
-
-except Exception as e:
-    st.error("Backend not running. Start FastAPI first.")
-    st.stop()
-
-if len(coins_data) == 0:
-    st.warning("No data found. Run ETL first.")
-    st.stop()
-
-df = pd.DataFrame(coins_data)
-
-# Remove duplicates (latest per coin)
-df = df.sort_values("extracted_at", ascending=False)
-df = df.drop_duplicates(subset=["coin_id"])
-
-# -------- SIDEBAR ----------
-st.sidebar.title("📊 Crypto Dashboard")
-
-menu = st.sidebar.selectbox(
-    "Select View",
-    ["Overview", "Coin Detail", "Rankings"]
+# -----------------------------
+# Auto-refresh using Streamlit's timer trick (no experimental_rerun)
+# -----------------------------
+# This will reload the script every 60 seconds
+st_autorefresh_interval = 60  # seconds
+st.markdown(
+    f"""<meta http-equiv="refresh" content="{st_autorefresh_interval}">""",
+    unsafe_allow_html=True
 )
 
-# -------- OVERVIEW PAGE ----------
-if menu == "Overview":
+# -----------------------------
+# Fetch data from SQLite
+# -----------------------------
+def get_data():
+    conn = sqlite3.connect("crypto_db.sqlite")
+    df = pd.read_sql("SELECT * FROM crypto_market ORDER BY market_cap_rank ASC", conn)
+    conn.close()
+    return df
 
-    st.title("🚀 Market Overview")
+df = get_data()
 
-    col1, col2, col3 = st.columns(3)
-
-    total_market_cap = df["market_cap"].sum()
-    avg_price = df["current_price"].mean()
-    highest_gainer = df.loc[df["price_change_24h"].idxmax()]["name"]
-
-    col1.metric("Total Market Cap", f"${total_market_cap:,.0f}")
-    col2.metric("Average Price", f"${avg_price:,.2f}")
-    col3.metric("Highest Gainer", highest_gainer)
-
-    st.divider()
-
+if df.empty:
+    st.warning("No data yet. Wait for ETL to run.")
+else:
+    st.title("🪙 Advanced Crypto Dashboard")
+    
+    # -----------------------------
+    # Top KPIs
+    # -----------------------------
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Total Market Cap", f"${df['market_cap'].sum():,.0f}")
+    col2.metric("Highest Gainer (24h)", df.loc[df['price_change_24h'].idxmax()]['name'])
+    col3.metric("Most Volatile", df.loc[df['volatility_score'].idxmax()]['name'])
+    col4.metric("Average Price", f"${df['current_price'].mean():.2f}")
+    
+    st.markdown("---")
+    
+    # -----------------------------
+    # Coin cards with logo + info
+    # -----------------------------
+    st.subheader("All Coins Overview")
+    for _, row in df.iterrows():
+        cols = st.columns([1,3,2,2,2,2])
+        with cols[0]:
+            if 'logo' in row and row['logo']:
+                st.image(row['logo'], width=50)
+            else:
+                st.text("No Logo")
+        with cols[1]:
+            st.markdown(f"**{row['name']} ({row['symbol'].upper()})**")
+        with cols[2]:
+            st.markdown(f"Price: ${row['current_price']:.2f}")
+        with cols[3]:
+            st.markdown(f"Market Cap: ${row['market_cap']:,}")
+        with cols[4]:
+            st.markdown(f"24h Change: {row['price_change_24h']:.2f}%")
+        with cols[5]:
+            st.markdown(f"Volatility: {row['volatility_score']:,}")
+        st.markdown("---")
+    
+    # -----------------------------
+    # Charts
+    # -----------------------------
     st.subheader("Market Cap Comparison")
-    st.bar_chart(df.set_index("name")["market_cap"])
-
+    st.bar_chart(df[['name', 'market_cap']].set_index('name'))
+    
     st.subheader("24h Price Change")
-    st.line_chart(df.set_index("name")["price_change_24h"])
-
-# -------- COIN DETAIL PAGE ----------
-elif menu == "Coin Detail":
-
-    st.title("🔍 Coin Detail View")
-
-    coin_list = df["name"].tolist()
-
-    selected_coin = st.selectbox("Select Coin", coin_list)
-
-    coin_df = df[df["name"] == selected_coin]
-
-    col1, col2, col3 = st.columns(3)
-
-    col1.metric("Price", f"${coin_df['current_price'].values[0]:,.2f}")
-    col2.metric("24h Change", f"{coin_df['price_change_24h'].values[0]:.2f}%")
-    col3.metric("Market Cap Rank", int(coin_df['market_cap_rank'].values[0]))
-
-    st.divider()
-
-    st.subheader("Volume")
-    st.bar_chart(coin_df.set_index("name")["total_volume"])
-
-    st.subheader("Volatility Score")
-    st.bar_chart(coin_df.set_index("name")["volatility_score"])
-
-# -------- RANKINGS PAGE ----------
-elif menu == "Rankings":
-
-    st.title("🏆 Rankings")
-
-    st.subheader("Top 5 Gainers")
-    top_gainers = df.sort_values("price_change_24h", ascending=False).head(5)
-    st.table(top_gainers[["name", "price_change_24h"]])
-
-    st.subheader("Top 5 Market Cap")
-    top_market = df.sort_values("market_cap", ascending=False).head(5)
-    st.table(top_market[["name", "market_cap"]])
-
-    st.subheader("Top 5 Most Volatile")
-    top_vol = df.sort_values("volatility_score", ascending=False).head(5)
-    st.table(top_vol[["name", "volatility_score"]])
-
-# -------- FOOTER ----------
-st.sidebar.markdown("---")
-st.sidebar.info("Auto refresh every time ETL runs 🚀")
+    st.line_chart(df[['name', 'price_change_24h']].set_index('name'))
+    
+    st.subheader("Volatility Ranking")
+    st.bar_chart(df[['name', 'volatility_score']].set_index('name'))
